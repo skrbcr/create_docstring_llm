@@ -1,29 +1,35 @@
 # Python Docstring Generator Tool
+A tool that automatically generates docstrings for Python code using LLM APIs. It processes Python files recursively and creates files with inserted docstrings while preserving the original codes.
 
-A tool that automatically generates Google-style docstrings for Python code using OpenRouter's API. Processes Python files recursively and creates stub files with docstrings in a `docstring/` directory while preserving the original function/class structure.
+## Overview
+
+This tool scans a specified directory for Python files and generates docstrings for functions and class methods using an LLM. It supports multiple docstring styles (Google, NumPy, reStructuredText) and can be configured either to insert new docstrings or overwrite existing ones.
 
 ## Features
 
-- Processes Python files recursively
-- Preserves function/class structure
-- Generates docstrings in multiple styles (Google, NumPy, reStructuredText)
-- Handles LLM response formatting automatically
-- Option to overwrite existing docstrings
-- Fallback behavior when docstring generation fails
-- Preserves original function bodies while only updating docstrings
-- Creates output directory structure matching input
+- Recursively processes Python files.
+- Supports multiple docstring styles:
+  - Google (default)
+  - NumPy
+  - reStructuredText
+- Integrates with various LLM services:
+  - OpenRouter API (default)
+  - OpenAI API
+  - ollama (local LLM)
+- Option to overwrite existing docstrings.
+- Preserves original function and class implementations while updating or inserting docstrings.
+- Recreates the directory structure in the specified output directory.
 
 ## Pre-requisites
 
-- [OpenRouter](https://openrouter.ai/) API key (you can get one for free)
-  - Can be provided via:
-    - `OPENROUTER_API_KEY` environment variable
-    - `--api-key` command line argument
-- [uv](https://github.com/astral-sh/uv) (recommended Python package manager)
+- An LLM API key:
+  - For OpenRouter (default): provide via the `OPENROUTER_API_KEY` environment variable or the `--api-key` option.
+  - For OpenAI: provide via the `OPENAI_API_KEY` environment variable or the `--api-key` option when using `--llm openai`.
+- [uv](https://github.com/astral-sh/uv) (recommended Python package manager).
 
 ## Installation
 
-1. Clone this repository
+1. Clone this repository.
 2. Install dependencies:
 
 ```bash
@@ -32,56 +38,56 @@ uv sync
 
 ## Usage
 
+The script takes an input directory and an output directory as positional arguments. It processes all `.py` files in the input directory (including in subdirectories) and writes the processed files with generated docstrings to the output directory, preserving the directory structure.
+
 Basic command:
 
 ```bash
-uv run docstring_generator.py [input_directory] [options]
+uv run docstring_generator.py [input_directory] [output_directory] [options]
 ```
 
 ### Options
 
-- `--api-key`: OpenRouter API key (overrides environment variable)
-- `--style`: Docstring style [google|numpy|rest] (default: google)
-- `--overwrite`: Overwrite existing docstrings (default: skip)
-- `--output-dir`, `-o`: Output directory (required)
-- `--verbose` or `-v`: Enable detailed logging
+- `--api-key`: LLM API key (overrides environment variable).
+- `--style`: Docstring style. Choices: `google` (default), `numpy`, `rest`.
+- `--overwrite`: Overwrite existing docstrings (default: skip).
+- `--llm`: LLM service to use. Choices: `openai`, `openrouter` (default), `ollama`.
+- `--url`: URL for the LLM server (required if using `ollama`).
+- `--model`: LLM model name. Defaults:
+  - OpenAI: `gpt-3.5-turbo`
+  - OpenRouter: `deepseek/deepseek-chat-v3-0324:free`
+  - ollama: `default_ollama_model`
+- `--verbose` or `-v`: Enable detailed logging.
 
 ### Examples
 
-1. Process `input/` directory with output to `output/`:
+1. Process the `input/` directory and output to `output/`:
 
 ```bash
-uv run docstring_generator.py ./input -o ./output
+uv run docstring_generator.py ./input ./output
 ```
 
-2. Process with explicit API key and verbose output:
+2. Process with an explicit API key and verbose logging:
 
 ```bash
-uv run docstring_generator.py ./input -o ./output --api-key sk-xxxxxxxx -v
+uv run docstring_generator.py ./input ./output --api-key sk-xxxxxxxx -v
 ```
 
 3. Process with NumPy style docstrings and overwrite existing ones:
 
 ```bash
-uv run docstring_generator.py ./input -o ./output --style numpy --overwrite
+uv run docstring_generator.py ./input ./output --style numpy --overwrite
 ```
 
 4. Full example with all options:
 
 ```bash
-uv run docstring_generator.py ./input \
-    -o ./output \
-    --api-key sk-xxxxxxxx \
-    --style rest \
-    --overwrite \
-    -v
+uv run docstring_generator.py ./input ./output --api-key sk-xxxxxxxx --style rest --overwrite --llm openrouter --model deepseek/deepseek-chat-v3-0324:free -v
 ```
 
 ## Output Structure
 
-The tool creates output files in the specified directory (`-o/--output-dir`), maintaining the input directory structure:
-
-Example output structure:
+The tool creates output files in the specified output directory, maintaining the directory structure of the input. For example:
 
 ```
 project/
@@ -89,7 +95,7 @@ project/
 │   ├── module1.py
 │   └── subdir/
 │       └── module2.py
-└── output/                   # Output directory (specified by -o/--output-dir)
+└── output/                   # Output directory
     ├── module1.py          # With generated docstrings
     └── subdir/
         └── module2.py      # With generated docstrings
@@ -97,13 +103,19 @@ project/
 
 ## Notes
 
-- The tool will overwrite existing files in the `docstring/` directory
-- Only Python files (`.py`) are processed
-- Original function/class implementations are preserved - only docstrings are updated
-- If docstring generation fails for a function/class, it will be skipped
+- Only Python files (`.py`) are processed.
+- The tool will overwrite files in the output directory if they exist.
+- If docstring generation fails for a function or class, that element is skipped.
+- Existing docstrings are preserved unless the `--overwrite` option is used.
+
+## Contributing
+
+Contributions are welcome!
+This tool may contain bugs or potential improvements.
+Feel free to open an issue or submit a pull request ;)
 
 ## Acknowledgements
 
-- This tool is developed with [Roo-Code](https://github.com/RooVetGit/Roo-Code).
-    - `DeepSeek-V3-0324 model` is used for code generation.
-- ChatGPT helps me with creating requiments definition document (`rdd.md`).
+- Developed with [Roo-Code](https://github.com/RooVetGit/Roo-Code).
+- Utilizes LLM services for generating docstrings.
+- ChatGPT contributed in creating the requirements definition document (rdd.md).
