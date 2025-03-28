@@ -15,22 +15,22 @@
 
 ### 出力
 
-- 新規ディレクトリ（例：`./docstring/src`）
-- 新しいディレクトリ `./docstring` を作成し、その中に元ディレクトリと同じ名前（例では `./src`）を配置。
-- 例では `./docstring/src` に元ディレクトリの構造を再帰的に複製。
-- 各 `.py` ファイルに対して処理を施す。
+- ユーザーが指定した出力ディレクトリに、入力ディレクトリを複製
+- 出力ディレクトリ内の全ての `.py` ファイル（再帰的に処理）に対して、docstring を挿入したファイルを生成
 
 ### 出力ファイルの仕様
 
-- **構造は保持**：関数・クラス・メソッドの名前や引数をコピー。
-
 - **docstring を挿入**：
-
   - 関数の定義の下に docstring を挿入。
-  - 既にdocstring がある場合は上書きする。
-  - docstring の内容は LLM（OpenRouter）を用いて生成。
-  - LLMの出力は「関数定義 + docstring」のみとする。
-  - スタイルは Google スタイルを基本としつつ、生成内容は LLM に任せる。
+  - 既にdocstring がある場合は上書きまたはパス
+    - これはオプションで指定
+    - デフォルトはパス（上書きしない）
+  - docstring の内容は LLM（OpenRouter）を用いて生成
+  - LLMの出力は docstring のみとする
+  - スタイルは Google, NumPy, reStructuredText スタイル
+    - ユーザーが選択可能
+    - デフォルトは Google スタイル
+    - LLMにプロンプトで「OO-style」と指定する
 
 - **対象関数の範囲**：
 
@@ -39,22 +39,17 @@
   - `if __name__ == "__main__"` ブロック内の関数も対象外とする。
   - 将来的にはデコレータの扱いについて検討する（現在は未定）。
 
-- **ディレクトリ構造**：
-
-  - 入力ディレクトリ名を `./docstring` 配下にそのままコピーして再構築する。
-
 - **LLM 入出力フォーマット**：
 
   - 入力：関数全体を LLM に次のプロンプトとともに送信する：
     
     ```text
-    Generate a Google-style docstring for the following Python function. Return only the function definition with the generated docstring.
+    Generate a [docstring format here]-style docstring for the following Python function. Return only the generated docstring.
 
     [function code here]
     ```
 
-  - 出力：対応する関数定義とその docstring を含む形式で出力ファイルに書き込む。
-  - docstring の埋め込みは自動で行い、手動修正を許容する設計とする。
+  - 出力：生成した docstring を出力ファイルに追加。
 
 #### 例
 
@@ -103,8 +98,3 @@ class Calculator:
 ## 想定ユースケース
 
 - docstring が整備されていないソースコードからドキュメントを作成する手助け。
-
-## 拡張・オプション（将来的に）
-
-- 既存の docstring を維持する or 上書きするオプション。
-- ソースコードへの直接的な編集。

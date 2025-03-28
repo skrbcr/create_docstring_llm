@@ -9,5 +9,5 @@ wheels/
 # Virtual environments
 .venv
 
-/src/
-/docstring/
+/test_input/
+/test_output/

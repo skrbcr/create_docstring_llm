@@ -16,9 +16,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class LLMClient:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, style: str = "google"):
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self.style = style
         if not self.api_key:
             logger.error("OpenRouter API key not found. Set OPENROUTER_API_KEY environment variable or use --api-key")
             sys.exit(1)
@@ -33,8 +34,8 @@ class LLMClient:
         payload = {
             "model": "deepseek/deepseek-chat-v3-0324:free",
             "messages": [{
-                "role": "user", 
-                "content": prompt + "\n\nReturn ONLY the function/class definition with Google-style docstring."
+                "role": "user",
+                "content": f"Generate a {self.style}-style docstring for the following Python function. Return only the generated docstring including both triple quotes (\"\"\"). Make sure to wrap the output with \"\"\" at both the beginning and the end. function:\n\n{prompt}"
             }],
             "temperature": 0.2,
             "max_tokens": 500
@@ -43,22 +44,24 @@ class LLMClient:
         try:
             response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)
             response.raise_for_status()
+            print(prompt)
+            print(response.json())
             content = response.json()["choices"][0]["message"]["content"]
             
-            # Extract just the function/class definition and docstring
-            pattern = r'^(def\s+\w+\(.*?\):|class\s+\w+\(?.*?\)?:)[\s\n]+""".*?"""'
-            match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
-            return match.group(0) if match else ""
+            # Extract just the docstring content
+            docstring_match = re.search(r'^(""".*?""")', content, re.MULTILINE | re.DOTALL)
+            return docstring_match.group(1) if docstring_match else ""
         except Exception as e:
             logger.error(f"LLM API error: {e}")
             return ""
 
 class DocstringGenerator:
-    def __init__(self, input_dir: str, api_key: Optional[str] = None):
+    def __init__(self, input_dir: str, output_dir: str, api_key: Optional[str] = None,
+                 style: str = "google", overwrite: bool = False):
         self.input_dir = os.path.abspath(input_dir)
-        base_name = os.path.basename(self.input_dir.rstrip('/'))
-        self.output_dir = os.path.abspath(os.path.join("docstring", base_name))
-        self.llm = LLMClient(api_key)
+        self.output_dir = os.path.abspath(output_dir)
+        self.llm = LLMClient(api_key, style)
+        self.overwrite = overwrite
         self.processed_count = 0
         self.skipped_count = 0
 
@@ -98,7 +101,7 @@ class DocstringGenerator:
                 source = f.read()
             
             tree = ast.parse(source)
-            processor = ASTProcessor(self.llm)
+            processor = ASTProcessor(self.llm, self.overwrite)
             processor.visit(tree)
             
             with open(output_path, "w", encoding="utf-8") as f:
@@ -109,8 +112,9 @@ class DocstringGenerator:
             self.skipped_count += 1
 
 class ASTProcessor(ast.NodeTransformer):
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, overwrite: bool = False):
         self.llm = llm
+        self.overwrite = overwrite
         super().__init__()
         self.current_class = None
 
@@ -159,30 +163,28 @@ class ASTProcessor(ast.NodeTransformer):
 
     def _generate_docstring(self, node):
         """
-        Generate a new docstring using LLM output and update the node's docstring without altering its original body.
+        Generate a new docstring using LLM output and update the node's docstring.
         """
         try:
-            # 現在のノード全体の定義を文字列化
+            # Skip if node already has docstring and overwrite is False
+            if not self.overwrite and ast.get_docstring(node) is not None:
+                return node
+                
+            # Get node definition without docstring
+            original_docstring = ast.get_docstring(node)
+            if original_docstring:
+                # Temporarily remove existing docstring
+                node.body = node.body[1:] if isinstance(node.body[0], ast.Expr) else node.body
+                
             node_def = ast.unparse(node)
-            prompt = (
-                f"Generate a Google-style docstring for this Python {'method' if self.current_class else 'function'}.\n"
-                f"Return the full definition with updated docstring, but preserve the original function body.\n\n"
-                f"{node_def}"
-            )
-            response = self.llm.generate(prompt)
+            response = self.llm.generate(node_def)
+            
             if response:
-                new_node = ast.parse(response).body[0]
-                # LLM の返答から docstring を抽出
-                new_docstring = ast.get_docstring(new_node)
-                if new_docstring is None:
-                    return node
-                docstring_node = ast.Expr(value=ast.Constant(value=new_docstring))
-                # 既存の docstring があれば置換、なければ先頭に挿入
-                if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, (ast.Str, ast.Constant)):
-                    node.body[0] = docstring_node
-                else:
-                    node.body.insert(0, docstring_node)
-                # 重複処理を防ぐためのフラグを設定
+                # Create docstring node from response
+                docstring_node = ast.Expr(value=ast.Constant(value=response.strip('"')))
+                
+                # Insert docstring at beginning of node body
+                node.body.insert(0, docstring_node)
                 node._docstring_updated = True
         except Exception as e:
             logger.warning(f"Failed to generate docstring for {node.name}: {e}")
@@ -203,6 +205,22 @@ def main():
         help="OpenRouter API key (overrides OPENROUTER_API_KEY)"
     )
     parser.add_argument(
+        "--style",
+        choices=["google", "numpy", "rest"],
+        default="google",
+        help="Docstring style (google, numpy, rest)"
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing docstrings"
+    )
+    parser.add_argument(
+        "--output-dir", "-o",
+        required=True,
+        help="Output directory (required)"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
@@ -213,7 +231,13 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
     
-    generator = DocstringGenerator(args.input_dir, args.api_key)
+    generator = DocstringGenerator(
+        args.input_dir,
+        args.output_dir,
+        api_key=args.api_key,
+        style=args.style,
+        overwrite=args.overwrite
+    )
     generator.process_directory()
 
 if __name__ == "__main__":
