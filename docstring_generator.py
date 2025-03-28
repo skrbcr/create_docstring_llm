@@ -3,10 +3,10 @@ import ast
 import shutil
 import re
 import sys
-import json
 import logging
-from typing import Optional, Union
+from typing import Optional
 import requests
+from openai import OpenAI
 
 # Configure logging
 logging.basicConfig(
@@ -16,51 +16,85 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class LLMClient:
-    def __init__(self, api_key: Optional[str] = None, style: str = "google"):
-        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    def __init__(self, api_key: Optional[str] = None, style: str = "google",
+                 llm: str = "openrouter", url: Optional[str] = None, model: Optional[str] = None):
+        self.llm_type = llm.lower()
+        if self.llm_type == "openai":
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        else:
+            self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         self.style = style
         if not self.api_key:
-            logger.error("OpenRouter API key not found. Set OPENROUTER_API_KEY environment variable or use --api-key")
+            logger.error("LLM API key not found. Set OPENROUTER_API_KEY environment variable or use --api-key")
             sys.exit(1)
-            
+        
+        # Configure API URL and default model based on llm type
+        if self.llm_type == "openai":
+            self.api_url = "https://api.openai.com/v1/chat/completions"
+            self.model = model if model is not None else "gpt-3.5-turbo"
+        elif self.llm_type == "ollama":
+            if not url:
+                logger.error("Ollama selected but no URL provided. Use --url option.")
+                sys.exit(1)
+            self.api_url = url
+            self.model = model if model is not None else "default_ollama_model"
+        else:  # Default to openrouter
+            self.api_url = "https://openrouter.ai/api/v1/chat/completions"
+            self.model = model if model is not None else "deepseek/deepseek-chat-v3-0324:free"
+
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
     def generate(self, prompt: str) -> str:
-        """Generate docstring using OpenRouter API"""
-        payload = {
-            "model": "deepseek/deepseek-chat-v3-0324:free",
-            "messages": [{
-                "role": "user",
-                "content": f"Generate a {self.style}-style docstring for the following Python function. Return only the generated docstring including both triple quotes (\"\"\"). Make sure to wrap the output with \"\"\" at both the beginning and the end. function:\n\n{prompt}"
-            }],
-            "temperature": 0.2,
-            "max_tokens": 500
-        }
-        
+        """Generate docstring using LLM API"""
+        if self.llm_type == "openai":
+            client = OpenAI()
+
+            response = client.responses.create(
+                model=self.model,
+                input=f"Generate a {self.style}-style docstring for the following Python function. Return only the generated docstring including both triple quotes. Ensure the output starts and ends with triple quotes. Function code:\n\n{prompt}",
+            )
+            try:
+                content = response.output_text
+            except Exception as e:
+                logger.error(f"OpenAI API error: {e}")
+                return ""
+        else:
+            payload = {
+                "model": self.model,
+                "messages": [{
+                    "role": "user",
+                    "content": f"Generate a {self.style}-style docstring for the following Python function. Return only the generated docstring including both triple quotes (\"\"\"). Make sure to wrap the output with \"\"\" at both the beginning and the end. function:\n\n{prompt}"
+                }],
+                "temperature": 0.2,
+                "max_tokens": 500
+            }
+            try:
+                response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)
+                response.raise_for_status()
+                print(prompt)
+                print(response.json())
+                content = response.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                logger.error(f"LLM API error: {e}")
+                return ""
         try:
-            response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)
-            response.raise_for_status()
-            print(prompt)
-            print(response.json())
-            content = response.json()["choices"][0]["message"]["content"]
-            
             # Extract just the docstring content
             docstring_match = re.search(r'^(""".*?""")', content, re.MULTILINE | re.DOTALL)
             return docstring_match.group(1) if docstring_match else ""
         except Exception as e:
-            logger.error(f"LLM API error: {e}")
+            logger.error(f"Error extracting docstring: {e}")
             return ""
 
 class DocstringGenerator:
     def __init__(self, input_dir: str, output_dir: str, api_key: Optional[str] = None,
-                 style: str = "google", overwrite: bool = False):
+                 style: str = "google", overwrite: bool = False, llm: str = "openrouter",
+                 url: Optional[str] = None, model: Optional[str] = None):
         self.input_dir = os.path.abspath(input_dir)
         self.output_dir = os.path.abspath(output_dir)
-        self.llm = LLMClient(api_key, style)
+        self.llm = LLMClient(api_key, style, llm, url, model)
         self.overwrite = overwrite
         self.processed_count = 0
         self.skipped_count = 0
@@ -119,18 +153,17 @@ class ASTProcessor(ast.NodeTransformer):
         self.current_class = None
 
     def visit_FunctionDef(self, node):
-        # すでに更新済みならスキップ
+        # Skip if already updated or should be skipped
         if not getattr(node, "_docstring_updated", False) and not self._should_skip(node):
             node = self._generate_docstring(node)
         return self.generic_visit(node)
     
     def visit_ClassDef(self, node):
-        # クラス自体の docstring を更新（すでに処理済みならスキップ）
+        # Update class docstring if not processed and not skipped
         if not getattr(node, "_docstring_updated", False) and not self._should_skip(node):
             node = self._generate_docstring(node)
-        # クラス名を current_class にセットして、内部のメソッド処理時に利用する
+        # Set current class for processing methods
         self.current_class = node.name
-        # メソッドは generic_visit で処理（visit_FunctionDef が呼ばれる）
         node = self.generic_visit(node)
         self.current_class = None
         return node
@@ -140,7 +173,6 @@ class ASTProcessor(ast.NodeTransformer):
         
         Currently, only nodes inside a __main__ block are skipped.
         """
-        # Skip if inside __main__ block
         parent = getattr(node, "parent", None)
         while parent:
             if (isinstance(parent, ast.If) and 
@@ -166,11 +198,10 @@ class ASTProcessor(ast.NodeTransformer):
         Generate a new docstring using LLM output and update the node's docstring.
         """
         try:
-            # Skip if node already has docstring and overwrite is False
+            # Skip if node already has a docstring and overwrite is False
             if not self.overwrite and ast.get_docstring(node) is not None:
                 return node
                 
-            # Get node definition without docstring
             original_docstring = ast.get_docstring(node)
             if original_docstring:
                 # Temporarily remove existing docstring
@@ -182,7 +213,6 @@ class ASTProcessor(ast.NodeTransformer):
             if response:
                 # Create docstring node from response
                 docstring_node = ast.Expr(value=ast.Constant(value=response.strip('"')))
-                
                 # Insert docstring at beginning of node body
                 node.body.insert(0, docstring_node)
                 node._docstring_updated = True
@@ -202,7 +232,7 @@ def main():
     )
     parser.add_argument(
         "--api-key",
-        help="OpenRouter API key (overrides OPENROUTER_API_KEY)"
+        help="LLM API key. For 'openai' llm type, overrides OPENAI_API_KEY. For others, overrides OPENROUTER_API_KEY."
     )
     parser.add_argument(
         "--style",
@@ -216,9 +246,22 @@ def main():
         help="Overwrite existing docstrings"
     )
     parser.add_argument(
-        "--output-dir", "-o",
-        required=True,
-        help="Output directory (required)"
+        "output_dir",
+        help="Output directory where processed files will be written"
+    )
+    parser.add_argument(
+        "--llm",
+        choices=["openai", "openrouter", "ollama"],
+        default="openrouter",
+        help="LLM type to use. For 'openai', use OPENAI_API_KEY; for others, use OPENROUTER_API_KEY."
+    )
+    parser.add_argument(
+        "--url",
+        help="URL for the LLM server; required if using 'ollama', ignored for other llm types."
+    )
+    parser.add_argument(
+        "--model",
+        help="LLM model name. Defaults: openai: 'gpt-3.5-turbo'; openrouter: 'deepseek/deepseek-chat-v3-0324:free'; ollama: 'default_ollama_model'."
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -236,7 +279,10 @@ def main():
         args.output_dir,
         api_key=args.api_key,
         style=args.style,
-        overwrite=args.overwrite
+        overwrite=args.overwrite,
+        llm=args.llm,
+        url=args.url,
+        model=args.model
     )
     generator.process_directory()
 
