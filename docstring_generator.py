@@ -308,7 +308,7 @@ def update_source_with_docstrings(source: str, llm, overwrite: bool) -> str:
         if has_doc:
             lines[doc_start:doc_end] = [formatted_doc]
         else:
-            insertion_index = node.lineno
+            insertion_index = node.end_lineno
             lines.insert(insertion_index, formatted_doc)
     return "".join(lines)
 
