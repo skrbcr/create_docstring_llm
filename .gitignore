@@ -11,3 +11,4 @@ wheels/
 
 /test_input/
 /test_output/
+/test/output_*/
