@@ -48,19 +48,29 @@ class LLMClient:
         }
 
     def generate(self, prompt: str) -> str:
-        """Generate docstring using LLM API"""
+        """Generate docstring using LLM API with retry for 429 errors"""
+        import time
         if self.llm_type == "openai":
             client = OpenAI()
-
-            response = client.responses.create(
-                model=self.model,
-                input=f"Generate a {self.style}-style docstring for the following Python function. Return only the generated docstring including both triple quotes. Ensure the output starts and ends with triple quotes. Function code:\n\n{prompt}",
-            )
-            try:
-                content = response.output_text
-            except Exception as e:
-                logger.error(f"OpenAI API error: {e}")
-                return ""
+            attempt = 0
+            while attempt < 3:
+                try:
+                    response = client.responses.create(
+                        model=self.model,
+                        input=f"Generate a {self.style}-style docstring for the following Python function. Return only the generated docstring including both triple quotes. Ensure the output starts and ends with triple quotes. Function code:\n\n{prompt}",
+                    )
+                    content = response.output_text
+                    return content
+                except Exception as e:
+                    if "429" in str(e):
+                        logger.warning("Received 429 error from OpenAI API. Waiting for 30 seconds before retrying...")
+                        time.sleep(30)
+                        attempt += 1
+                    else:
+                        logger.error(f"OpenAI API error: {e}")
+                        return ""
+            logger.error("Failed to generate docstring after 3 attempts due to rate limiting.")
+            return ""
         else:
             payload = {
                 "model": self.model,
@@ -71,31 +81,40 @@ class LLMClient:
                 "temperature": 0.2,
                 "max_tokens": 500
             }
-            try:
-                response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)
-                response.raise_for_status()
-                print(prompt)
-                print(response.json())
-                content = response.json()["choices"][0]["message"]["content"]
-            except Exception as e:
-                logger.error(f"LLM API error: {e}")
-                return ""
-        try:
-            # Extract just the docstring content
-            docstring_match = re.search(r'^(""".*?""")', content, re.MULTILINE | re.DOTALL)
-            return docstring_match.group(1) if docstring_match else ""
-        except Exception as e:
-            logger.error(f"Error extracting docstring: {e}")
+            attempt = 0
+            while attempt < 3:
+                try:
+                    response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)
+                    if response.status_code == 429:
+                        logger.warning("Rate limit exceeded (429). Waiting for 30 seconds before retrying...")
+                        time.sleep(30)
+                        attempt += 1
+                        continue
+                    response.raise_for_status()
+                    print(prompt)
+                    print(response.json())
+                    content = response.json()["choices"][0]["message"]["content"]
+                    return content
+                except Exception as e:
+                    if "429" in str(e):
+                        logger.warning("Received 429 error from API. Waiting for 30 seconds before retrying...")
+                        time.sleep(30)
+                        attempt += 1
+                        continue
+                    logger.error(f"LLM API error: {e}")
+                    return ""
+            logger.error("Failed to generate docstring after 3 attempts due to rate limiting.")
             return ""
 
 class DocstringGenerator:
     def __init__(self, input_dir: str, output_dir: str, api_key: Optional[str] = None,
                  style: str = "google", overwrite: bool = False, llm: str = "openrouter",
-                 url: Optional[str] = None, model: Optional[str] = None):
+                 url: Optional[str] = None, model: Optional[str] = None, num_threads: int = 4):
         self.input_dir = os.path.abspath(input_dir)
         self.output_dir = os.path.abspath(output_dir)
         self.llm = LLMClient(api_key, style, llm, url, model)
         self.overwrite = overwrite
+        self.num_threads = num_threads
         self.processed_count = 0
         self.skipped_count = 0
 
@@ -129,17 +148,15 @@ class DocstringGenerator:
         logger.info(f"Processing complete. Processed: {self.processed_count}, Skipped: {self.skipped_count}")
 
     def process_file(self, input_path: str, output_path: str):
-        """Process a single Python file"""
+        """Process a single Python file while preserving original formatting except for docstring updates."""
         try:
             with open(input_path, "r", encoding="utf-8") as f:
                 source = f.read()
             
-            tree = ast.parse(source)
-            processor = ASTProcessor(self.llm, self.overwrite)
-            processor.visit(tree)
+            new_source = update_source_with_docstrings(source, self.llm, self.overwrite)
             
             with open(output_path, "w", encoding="utf-8") as f:
-                f.write(ast.unparse(tree))
+                f.write(new_source)
                 
         except Exception as e:
             logger.error(f"Error processing {input_path}: {e}")
@@ -220,6 +237,81 @@ class ASTProcessor(ast.NodeTransformer):
             logger.warning(f"Failed to generate docstring for {node.name}: {e}")
         return node
 
+def update_source_with_docstrings(source: str, llm, overwrite: bool) -> str:
+    """
+    Update the docstrings in the source code using the provided LLM.
+    This function preserves all code formatting except for updates to function/method docstrings.
+    It processes top-level functions, methods, and class definitions (excluding those in a __main__ block)
+    and inserts or replaces the docstring based on the 'overwrite' flag.
+    Docstring generation is performed concurrently.
+    """
+    import re
+    from concurrent.futures import ThreadPoolExecutor
+    lines = source.splitlines(keepends=True)
+    tree = ast.parse(source)
+    parent_map = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_map[child] = parent
+
+    def is_inside_main(node):
+        current = node
+        while current in parent_map:
+            parent = parent_map[current]
+            if isinstance(parent, ast.If):
+                test = parent.test
+                if (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and test.left.id == "__name__"):
+                    return True
+            current = parent
+        return False
+
+    targets = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if is_inside_main(node):
+                continue
+            if not overwrite and ast.get_docstring(node, clean=False) is not None:
+                continue
+            targets.append(node)
+    
+    targets.sort(key=lambda n: n.lineno, reverse=True)
+
+    results = {}
+    with ThreadPoolExecutor() as executor:
+        future_map = {node: executor.submit(llm.generate, "".join(lines[node.lineno - 1:node.end_lineno])) for node in targets}
+        for node, future in future_map.items():
+            results[node] = future.result()
+
+    for node in targets:
+        new_doc = results.get(node)
+        if not new_doc:
+            continue
+        has_doc = False
+        if node.body and isinstance(node.body[0], ast.Expr):
+            first_expr = node.body[0]
+            if (hasattr(first_expr, "value") and isinstance(first_expr.value, (ast.Constant, ast.Constant)) and isinstance(ast.get_docstring(node, clean=False), str)):
+                has_doc = True
+                doc_start = first_expr.lineno - 1
+                doc_end = first_expr.end_lineno
+        indent = ""
+        if node.body:
+            line_str = lines[node.body[0].lineno - 1]
+            indent_match = re.match(r"(\s*)", line_str)
+            if indent_match:
+                indent = indent_match.group(1)
+        else:
+            def_line = lines[node.lineno - 1]
+            indent_match = re.match(r"(\s*)", def_line)
+            indent = (indent_match.group(1) + "    ") if indent_match else "    "
+        doc_lines = new_doc.splitlines()
+        formatted_doc = "\n".join(indent + line if line.strip() != "" else line for line in doc_lines) + "\n"
+        if has_doc:
+            lines[doc_start:doc_end] = [formatted_doc]
+        else:
+            insertion_index = node.lineno
+            lines.insert(insertion_index, formatted_doc)
+    return "".join(lines)
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -268,6 +360,10 @@ def main():
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "-n", "--num-threads", type=int, default=4,
+        help="Number of threads to use for parallel processing"
+    )
     
     args = parser.parse_args()
     
@@ -282,7 +378,8 @@ def main():
         overwrite=args.overwrite,
         llm=args.llm,
         url=args.url,
-        model=args.model
+        model=args.model,
+        num_threads=args.num_threads
     )
     generator.process_directory()
 

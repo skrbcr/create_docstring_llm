@@ -1,135 +1,129 @@
-# Python スタブ生成ツール：要件定義書
+# Python docstring生成ツール：要件定義書
 
 ## 概要
 
-本ツールは、指定されたディレクトリ配下の Python ファイルに対し、docstring を生成するツールである。
+本ツールは、指定されたディレクトリ配下の Python ファイルに対し、docstring を生成するツールである。  
+生成された docstring は、既存のコードの構造（import 文、グローバル定数、`if __name__ == '__main__'` ブロックなど）に一切影響を与えず、追加または更新される。
 
 ## 設計
 
 ### 入力
 
-- ディレクトリパス（例：`./src`）
-- このディレクトリ配下にある `.py` ファイルすべてが処理対象となる。
-- サブディレクトリも再帰的に含む。
-- `.py` ファイル以外は対象外とする。
+- **ディレクトリパス**  
+  例：`./src`  
+  このディレクトリ配下にある `.py` ファイルすべてが処理対象となる。  
+  サブディレクトリも再帰的に含む。  
+  `.py` ファイル以外は対象外とする。
 
 ### 出力
 
-- ユーザーが指定した出力ディレクトリに、入力ディレクトリを複製
-- 出力ディレクトリ内の全ての `.py` ファイル（再帰的に処理）に対して、docstring を挿入したファイルを生成
+- ユーザーが指定した出力ディレクトリに、入力ディレクトリを複製する。  
+- 出力ディレクトリ内の全ての `.py` ファイル（再帰的に処理）に対して、生成された docstring を追加または更新したファイルを生成する。
 
-### 処理
+### 処理フロー
 
-- **docstring を挿入**：
-  - 関数の定義の下に docstring を挿入。
-  - 既にdocstring がある場合は上書きまたはパス
-    - これはオプションで指定
-    - デフォルトはパス（上書きしない）
-  - docstring の内容は LLMを用いて生成
-  - LLMの出力は docstring のみとする
-  - スタイルは Google, NumPy, reStructuredText スタイル
-    - ユーザーが選択可能
-    - デフォルトは Google スタイル
-    - LLMにプロンプトで「OO-style」と指定する
+1. **解析フェーズ**  
+   - ファイルを読み込み、AST（抽象構文木）等を用いて、対象となる関数・メソッド（トップレベルの関数およびクラス内メソッド）を抽出する。  
+   - `import` 文、グローバル定数、`if __name__ == '__main__'` ブロック等、対象外セクションは保持する。
 
-- **対象関数の範囲**：
+2. **docstring生成フェーズ**  
+   - 対象関数・メソッド毎に、LLM を用いて docstring を生成する。  
+   - LLM に渡す入力は、関数全体と以下のプロンプトとする：  
+     ```
+     Generate a [docstring format here]-style docstring for the following Python function. Return only the generated docstring.
 
-  - `def` により定義されたトップレベル関数、およびクラス内のメソッドを対象とする。
-  - 内部関数（関数内部で定義された関数）やラムダ式は対象外。
-  - `if __name__ == "__main__"` ブロック内の関数も対象外とする。
-  - 将来的にはデコレータの扱いについて検討する（現在は未定）。
+     [function code here]
+     ```
+   - 出力は、生成された docstring のみとする。
 
-- **LLM**
+3. **並列処理の導入**  
+   - 対象の関数・メソッド毎に個別の API リクエストを並列処理で実施する。  
+   - Python の `concurrent.futures` の `ThreadPoolExecutor` や `ProcessPoolExecutor` などを用いて、処理速度を向上させる。
 
-  - OpenRouter API
-  - OpenAI API (Responses API)
+4. **統合フェーズ**  
+   - 並列処理で生成された各docstringを元のコードの対象関数・メソッドに正確に再配置する。  
+   - 解析時に抽出した対象外セクション（import 文、グローバル定数、`if __name__ == '__main__'` ブロックなど）は一切変更せず保持する。  
+   - 最終成果物は、元のコードの構造やフォーマットに一切の過不足が発生しないようにする。
+
+5. **LLMエラー時の対処**
+    - レスポンスが `429` エラーの場合、リクエスト過多（rate limit exceeds）である。30秒待ってからリトライする。
+    - エラー発生時は、エラーが発生した関数・メソッドをパスし、つづきを処理する。
+
+### 追加要件：最終成果物の正確性と整合性の保証
+
+- **コード構造の完全保持**  
+  - **対象外セクションの非改変**  
+    - `import` 文、グローバル定数、`if __name__ == '__main__'` ブロックなど、対象外とするコード部分は変更せずそのまま保持する。  
+    - 解析時にこれらのセクションを明示的に認識し、後工程の統合フェーズで元の順序やインデント、フォーマットが損なわれないようにする。
+
+- **docstring の追加・更新のみを行う**  
+  - 変更対象は関数・メソッド定義部分の docstring の挿入または更新のみとし、それ以外のコード内容、コメント、空行、インデントなどに一切の変更がないことを保証する。
+
+- **並列処理と統合フェーズの整合性**  
+  - 並列で生成された各 docstring は、元のファイル内の対象関数・メソッドの位置情報を保持し、正確に再配置されること。  
+  - 並列処理と統合処理の間で、コード全体の構造（改行、インデント、コメントなど）に影響を与えない仕組みを導入する。
+
+- **検証・テスト要件**  
+  - 最終成果物のファイルについて、元のコードとの差分検出ツールなどを用いて、docstring の追加または更新以外に変更が発生していないことを自動検証するテストを組み込む。  
+  - 変更範囲が対象の関数・メソッドに限定されていることを確認するための回帰テストを実施する。
+
+- **エラーハンドリングとロールバック機能**  
+  - 並列処理中にエラーが発生した場合、最終統合時に部分的な変更が適用されないよう、処理全体をロールバックできる仕組みを整備する。  
+  - 各 API リクエストの結果の整合性をチェックし、正しく取得できなかった場合は再試行または手動確認のフローを用意する。
+
+### 対象関数の範囲
+
+- `def` により定義されたトップレベル関数およびクラス内のメソッドを対象とする。  
+- 内部関数（関数内部で定義された関数）やラムダ式は対象外とする。  
+- `if __name__ == "__main__"` ブロック内の関数も対象外とする。  
+- 将来的にはデコレータの扱いについても検討する（現段階では未定）。
+
+### LLM の利用
+
+- **利用可能な LLM**  
+  - OpenRouter API  
+  - OpenAI API (Responses API)  
   - ollama（ローカルLLM）
 
-- **LLM 入出力フォーマット**：
-
-  - 入力：関数全体を LLM に次のプロンプトとともに送信する：
-    
-    ```text
-    Generate a [docstring format here]-style docstring for the following Python function. Return only the generated docstring.
-
-    [function code here]
-    ```
-
-  - 出力：生成した docstring を出力ファイルに追加。
-
-#### 例
-
-**入力ファイル**
-
-```python
-def add(a, b):
-    return a + b
-
-class Calculator:
-    def subtract(self, x, y):
-        return x - y
-```
-
-**出力ファイル**
-
-```python
-def add(a, b):
-    """
-    Add two numbers.
-
-    Args:
-        a: A number.
-        b: A number.
-
-    Returns:
-        Sum of a and b.
-    """
-    return a + b
-
-class Calculator:
-    def subtract(self, x, y):
-        """
-        Subtract one number from another.
-
-        Args:
-            x: A number.
-            y: A number.
-
-        Returns:
-            Result of x - y.
-        """
-        return x - y
-```
+- **LLM 入出力フォーマット**  
+  - **入力**：関数全体とともに上記のプロンプトを LLM に送信  
+  - **出力**：生成された docstring のみを受け取り、対象関数・メソッドに追加・更新する
 
 ### インターフェイス
 
-- コマンドラインツールとして提供
+- **コマンドラインツールとして提供**
 
-```bash
-uv run docstring_generator.py [input_dir] [output_dir] [options]
-```
+  ```bash
+  uv run docstring_generator.py [input_dir] [output_dir] [options]
+  ```
 
-- オプション
+- **オプション**
 
-  - `--api-key`：OpenRouter, OpenAI API のキー。環境変数（下記参照）を上書きする。文字列
-  - `--style`：docstring のスタイル
-    - `google`: Google
-    - `numpy`: NumPy
-    - `rest`: reStructuredText
-  - `--overwrite`：既存の docstring を上書きするかどうか（デフォルトはパス）
-  - `--llm`：試用する LLM の種類
-    - `openai`: OpenAI API
-    - `openrouter`: OpenRouter API
-    - `ollama`: ollama（ローカルLLM）
-      - `--url`：ローカルサーバの URL。文字列
-  - `--model`：LLM のモデル名。文字列
+  - `--api-key`：OpenRouter, OpenAI API のキー（環境変数を上書き）  
+  - `--style`：docstring のスタイル  
+    - `google`: Google スタイル  
+    - `numpy`: NumPy スタイル  
+    - `rest`: reStructuredText スタイル  
+  - `--overwrite`：既存の docstring を上書きするかどうか（デフォルトは上書きせずパス）  
+  - `--llm`：使用する LLM の種類  
+    - `openai`: OpenAI API  
+    - `openrouter`: OpenRouter API  
+    - `ollama`: ollama（ローカルLLM）  
+      - `--url`：ローカルサーバの URL  
+  - `--model`：LLM のモデル名  
+  - `-n`：並列処理のスレッド数（デフォルトは1）
   - `--verbose` or `-v`：詳細なログを出力（デフォルトは無効）
 
-- 環境変数
+- **環境変数**
 
-  - `OPENROUTER_API_KEY`：OpenRouter API のキー
+  - `OPENROUTER_API_KEY`：OpenRouter API のキー  
   - `OPENAI_API_KEY`：OpenAI API のキー
 
-## 想定ユースケース
+### 想定ユースケース
 
-- docstring が整備されていないソースコードからドキュメントを作成する手助け。
+- docstring が整備されていないソースコードから、ドキュメント生成を自動化するための補助ツールとして利用する。
+
+## まとめ
+
+本ツールは、関数・メソッド単位での並列処理を用いて効率的に docstring を生成し、生成された docstring を正確に元のコードに統合することを目的とする。  
+追加要件により、import 文、グローバル定数、`if __name__ == '__main__'` ブロック等、対象外のコード部分が一切変更されず、docstring の追加・更新のみが行われることが保証される。

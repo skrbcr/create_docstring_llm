@@ -1,4 +1,5 @@
 # Python Docstring Generator Tool
+
 A tool that automatically generates docstrings for Python code using LLM APIs. It processes Python files recursively and creates files with inserted docstrings while preserving the original codes.
 
 ## Overview
@@ -19,6 +20,7 @@ This tool scans a specified directory for Python files and generates docstrings 
 - Option to overwrite existing docstrings.
 - Preserves original function and class implementations while updating or inserting docstrings.
 - Recreates the directory structure in the specified output directory.
+- Parallel processing.
 
 ## Pre-requisites
 
@@ -53,10 +55,11 @@ uv run docstring_generator.py [input_directory] [output_directory] [options]
 - `--overwrite`: Overwrite existing docstrings (default: skip).
 - `--llm`: LLM service to use. Choices: `openai`, `openrouter` (default), `ollama`.
 - `--url`: URL for the LLM server (required if using `ollama`).
-- `--model`: LLM model name. Defaults:
-  - OpenAI: `gpt-3.5-turbo`
+- `--model`: LLM model name. Options and defaults:
+  - OpenAI: `gpt-3.5-turbo` but **you should use more recent models**.
   - OpenRouter: `deepseek/deepseek-chat-v3-0324:free`
   - ollama: `default_ollama_model`
+- `--num` or `-n`: Number of threads for parallel processing (default: 1).
 - `--verbose` or `-v`: Enable detailed logging.
 
 ### Examples
